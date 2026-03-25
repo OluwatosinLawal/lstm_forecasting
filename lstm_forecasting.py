@@ -4,8 +4,8 @@
 #            Forecasting System from Historical Sales Data
 #  Company : Alerzo Limited (Nigerian B2B E-Commerce)
 #  Period  : January 1, 2023 – November 22, 2025
-#  Author  : [Your Name]
-#  Tool    : Python 3.10+ | VS Code | TensorFlow / Keras
+#  Author  : Oluwatosin Oluwabukola Lawal
+#  Tool    : Python 3.11.9 | VS Code | TensorFlow / Keras
 # =============================================================================
 
 # =============================================================================
@@ -127,8 +127,37 @@ for label, path in DATA_FILES.items():
 
     # read_csv automatically reads the file; parse_dates converts orderDate
     # from text/integer to a proper Python datetime object
-    df = pd.read_csv(path, parse_dates=["orderDate"], low_memory=False)
-    df["_source"] = label          # Track which file each row originated from
+    df = pd.read_csv(path, low_memory=False)
+
+    # Strip leading/trailing spaces from ALL column names across all files
+    df = pd.read_csv(path, low_memory=False)
+
+    # Strip spaces from all column names
+    df.columns = df.columns.str.strip()
+
+    # Strip spaces from all text values
+    df = df.apply(lambda col: col.str.strip() if col.dtype == "object" else col)
+
+    # Remove commas from numeric columns so "15,500" becomes 15500
+    for col in ["final_amount", "unitPrice", "orderTotal", "quantitySold"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(
+                df[col].astype(str).str.replace(",", "", regex=False),
+                errors="coerce"
+            )
+
+    # Parse dates properly
+    df["orderDate"] = pd.to_datetime(df["orderDate"], errors="coerce")
+
+    df["_source"] = label
+
+    # Strip spaces from text columns too, in case values have padding
+    df = df.apply(lambda col: col.str.strip() if col.dtype == "object" else col)
+
+    # Force orderDate to proper datetime — errors="coerce" turns bad values to NaT
+    df["orderDate"] = pd.to_datetime(df["orderDate"], errors="coerce")
+
+    df["_source"] = label
     frames.append(df)
     print(f"  ✔  {label:<8s}  →  {len(df):>10,} rows loaded")
 
@@ -168,7 +197,12 @@ print(master["salesCategory"].value_counts())
 print("\n📅 Aggregating to daily total sales…")
 
 # Ensure the date column is datetime (in case it wasn't parsed)
-master["orderDate"] = pd.to_datetime(master["orderDate"])
+# Drop any rows where orderDate could not be parsed (NaT values)
+master["orderDate"] = pd.to_datetime(master["orderDate"], errors="coerce")
+master = master.dropna(subset=["orderDate"])
+
+# Standardise salesCategory capitalisation across all files
+master["salesCategory"] = master["salesCategory"].str.strip().str.title()
 
 # groupby("orderDate") groups all rows that share the same date,
 # then ["final_amount"].sum() totals the sales for each group
