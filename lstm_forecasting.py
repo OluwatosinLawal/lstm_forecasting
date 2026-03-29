@@ -254,6 +254,12 @@ daily = (
 # so MAPE doesn't divide by zero and the date index stays aligned
 daily = daily[daily["total_sales"] > 0].reset_index(drop=True)
 
+# Also remove extreme outlier low days (bottom 1% of sales)
+# These are likely partial trading days or data errors
+low_threshold = daily["total_sales"].quantile(0.01)
+daily = daily[daily["total_sales"] > low_threshold].reset_index(drop=True)
+print(f"   After removing bottom 1% outliers: {len(daily)} days")
+
 print(f"✅ Complete calendar series : {len(daily)} days (zeros removed)")
 
 
@@ -441,7 +447,8 @@ print("\n⚙️  Configuring training callbacks…")
 # weights are rolled back to the best epoch found, not the final epoch.
 early_stop = EarlyStopping(
     monitor="val_loss",
-    patience=PATIENCE,
+    patience=20,          # was PATIENCE — give model more time to improve
+    min_delta=0.0001,     # only count as improvement if loss drops by this much
     restore_best_weights=True,
     verbose=1
 )
@@ -452,7 +459,7 @@ early_stop = EarlyStopping(
 reduce_lr = ReduceLROnPlateau(
     monitor="val_loss",
     factor=0.5,        # New LR = current LR × 0.5
-    patience=5,
+    patience=8,
     min_lr=1e-6,       # Never go below this learning rate
     verbose=1
 )
@@ -536,6 +543,7 @@ print(f"✅ {len(y_pred)} test-set predictions generated.")
 # =============================================================================
 # SECTION 15 ── EVALUATION METRICS
 # We compute RMSE, MAE, and MAPE on the original-scale (₦) values.
+# sMAPE — more robust than MAPE when actuals approach zero
 # =============================================================================
 print("\n📏 Computing evaluation metrics…")
 
@@ -543,10 +551,16 @@ def evaluate(y_true, y_hat, name="Model"):
     """Computes and prints RMSE, MAE, and MAPE for a set of predictions."""
     rmse = np.sqrt(mean_squared_error(y_true, y_hat))
     mae  = mean_absolute_error(y_true, y_hat)
+    
 
-    # MAPE: skip days with zero actual sales to avoid division by zero
-    nz   = y_true != 0
-    mape = np.mean(np.abs((y_true[nz] - y_hat[nz]) / y_true[nz])) * 100
+    # Only include days where actual sales exceed 1% of the mean
+    # This removes extreme low-sale outlier days that destroy MAPE
+    threshold = np.mean(y_true) * 0.01
+    mask = y_true > threshold
+    mape = np.mean(np.abs((y_true[mask] - y_hat[mask]) / y_true[mask])) * 100
+
+    # sMAPE — symmetric, handles near-zero actuals without exclusion
+    smape = np.mean(2 * np.abs(y_true - y_hat) / (np.abs(y_true) + np.abs(y_hat) + 1e-8)) * 100
 
     print(f"\n{'═'*44}")
     print(f"  {name} — Performance on Test Set")
@@ -554,9 +568,11 @@ def evaluate(y_true, y_hat, name="Model"):
     print(f"  RMSE  :  ₦{rmse:>15,.2f}")
     print(f"  MAE   :  ₦{mae:>15,.2f}")
     print(f"  MAPE  :   {mape:>14.2f} %")
+    print(f"  sMAPE :   {smape:>14.2f} %")
+    print(f"  Days evaluated (MAPE): {mask.sum()} of {len(y_true)}")
     print(f"{'═'*44}")
 
-    return {"Model": name, "RMSE": rmse, "MAE": mae, "MAPE": mape}
+    return {"Model": name, "RMSE": rmse, "MAE": mae, "MAPE": mape, "sMAPE": smape}
 
 lstm_result = evaluate(y_actual, y_pred, name="Vanilla LSTM")
 
@@ -693,6 +709,7 @@ display_df = results_df.copy()
 display_df["RMSE"] = display_df["RMSE"].apply(lambda v: f"₦{v:,.2f}")
 display_df["MAE"]  = display_df["MAE"].apply(lambda v: f"₦{v:,.2f}")
 display_df["MAPE"] = display_df["MAPE"].apply(lambda v: f"{v:.2f}%")
+display_df["sMAPE"] = display_df["sMAPE"].apply(lambda v: f"{v:.2f}%")
 
 print("\n" + "═"*55)
 print("         COMPARATIVE MODEL PERFORMANCE SUMMARY")
@@ -712,9 +729,10 @@ print(f"\n✅ Results table saved → {results_path}")
 # =============================================================================
 print("\n📊 Plotting comparative bar chart…")
 
-fig, axes = plt.subplots(1, 3, figsize=(14, 5))
+fig, axes = plt.subplots(1, 4, figsize=(18, 5))
 colours = ["#1565C0", "#E53935", "#2E7D32"]
-metrics = [("RMSE", "RMSE (₦)"), ("MAE", "MAE (₦)"), ("MAPE", "MAPE (%)")]
+metrics = [("RMSE", "RMSE (₦)"), ("MAE", "MAE (₦)"), ("MAPE", "MAPE (%)"), ("sMAPE", "sMAPE (%)")]
+
 
 for ax, (metric, label) in zip(axes, metrics):
     vals  = results_df[metric].values
@@ -725,9 +743,15 @@ for ax, (metric, label) in zip(axes, metrics):
     for bar in bars:
         h = bar.get_height()
         # Add value label above each bar for quick reading
+        # Format Naira metrics differently from percentage metrics
+        if metric in ("RMSE", "MAE"):
+            label_text = f"₦{h:,.0f}"
+        else:
+            label_text = f"{h:.1f}%"
         ax.text(bar.get_x() + bar.get_width() / 2, h * 1.01,
-                f"{h:,.0f}", ha="center", va="bottom", fontsize=9)
+                label_text, ha="center", va="bottom", fontsize=8)
     ax.grid(True, alpha=0.3, axis="y")
+    ax.tick_params(axis="x", labelsize=9)
 
 plt.suptitle("Model Comparison: LSTM vs Baseline Forecasting Models",
              fontsize=13, fontweight="bold")
