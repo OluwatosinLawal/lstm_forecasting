@@ -147,7 +147,8 @@ for label, path in DATA_FILES.items():
             )
 
     # Parse dates properly
-    df["orderDate"] = pd.to_datetime(df["orderDate"], errors="coerce")
+    # dayfirst=True tells pandas your dates are dd/mm/yyyy format
+    df["orderDate"] = pd.to_datetime(df["orderDate"], dayfirst=True, errors="coerce")
 
     df["_source"] = label
 
@@ -155,7 +156,8 @@ for label, path in DATA_FILES.items():
     df = df.apply(lambda col: col.str.strip() if col.dtype == "object" else col)
 
     # Force orderDate to proper datetime — errors="coerce" turns bad values to NaT
-    df["orderDate"] = pd.to_datetime(df["orderDate"], errors="coerce")
+    # dayfirst=True tells pandas your dates are dd/mm/yyyy format
+    df["orderDate"] = pd.to_datetime(df["orderDate"], dayfirst=True, errors="coerce")
 
     df["_source"] = label
     frames.append(df)
@@ -231,9 +233,11 @@ print(f"   Mean sales   : ₦{daily['total_sales'].mean():>15,.2f}")
 print("\n📅 Ensuring a gapless daily calendar…")
 
 # date_range creates every single calendar day between start and end
-full_calendar = pd.date_range(start=daily["date"].min(),
-                               end=daily["date"].max(),
-                               freq="D")
+full_calendar = pd.date_range(
+    start=daily["date"].min(),
+    end=daily["date"].max(),
+    freq="D"
+)
 
 # reindex replaces the date index with the complete calendar;
 # any day that had no sales gets NaN, then fillna(0) replaces NaN with 0
@@ -246,7 +250,11 @@ daily = (
     .rename(columns={"index": "date"})
 )
 
-print(f"✅ Complete calendar series : {len(daily)} days (no gaps)")
+# Remove zero-sale days caused by weekends/holidays or bad rows
+# so MAPE doesn't divide by zero and the date index stays aligned
+daily = daily[daily["total_sales"] > 0].reset_index(drop=True)
+
+print(f"✅ Complete calendar series : {len(daily)} days (zeros removed)")
 
 
 # =============================================================================
@@ -559,9 +567,9 @@ lstm_result = evaluate(y_actual, y_pred, name="Vanilla LSTM")
 # =============================================================================
 print("\n📈 Plotting test-set predictions vs actual sales…")
 
-# Retrieve the date values corresponding to the test set
-# The test set starts at day (val_end + LOOK_BACK) in the original daily series
-test_dates = daily["date"].values[val_end + LOOK_BACK:]
+
+# Align test dates precisely to the sequence index
+test_dates = daily["date"].values[len(daily) - len(y_test):]
 
 fig, ax = plt.subplots(figsize=(16, 6))
 ax.plot(test_dates, y_actual, color="#1565C0", linewidth=1.3,
